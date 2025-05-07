@@ -8,6 +8,9 @@
 #include "assets/lang_config.h"
 #include <cstring>
 #include "settings.h"
+#if CONFIG_USE_LOTTIE_EMO
+#include "lottie/look.h"
+#endif
 
 #include "board.h"
 
@@ -553,6 +556,12 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
     // Store reference to the latest message label
     chat_message_label_ = msg_text;
 }
+#elif CONFIG_USE_LOTTIE_EMO
+void LcdDisplay::SetupUI() {
+    DisplayLockGuard lock(this);
+    
+    SetEmotion("neutral");
+}
 #else
 void LcdDisplay::SetupUI() {
     DisplayLockGuard lock(this);
@@ -654,6 +663,27 @@ void LcdDisplay::SetupUI() {
 }
 #endif
 
+#if CONFIG_USE_LOTTIE_EMO
+void LcdDisplay::SetEmotion(const char* emotion) {
+    ESP_LOGI(TAG, "emotion: %s", emotion);
+    const char* emotion_ = nullptr;
+    if (strcmp(emotion, "neutral") == 0) {
+        emotion_ = (const char*) look;
+    }
+    if (emotion_ == nullptr) {
+        return;
+    }
+    auto screen = lv_screen_active();
+    lv_obj_t* lottie = lv_rlottie_create_from_raw(screen, width_, height_, emotion_);
+
+    lv_obj_center(lottie);
+    if (lottie == NULL) {
+        ESP_LOGE(TAG, "Failed to create Lottie object");
+        return;
+    }
+    ESP_LOGI(TAG, "setup ui end");
+}
+#else
 void LcdDisplay::SetEmotion(const char* emotion) {
     struct Emotion {
         const char* icon;
@@ -702,6 +732,7 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         lv_label_set_text(emotion_label_, "😶");
     }
 }
+#endif
 
 void LcdDisplay::SetIcon(const char* icon) {
     DisplayLockGuard lock(this);
