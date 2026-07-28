@@ -1,9 +1,18 @@
+#define NETWORK_MODE 1 // 0-4G; 1-WIFI
+
+#if NETWORK_MODE == 0
 #include "ml307_board.h"
+#else
+#include "wifi_board.h"
+#include <wifi_manager.h>
+#endif
+
 #include "codecs/es8311_audio_codec.h"
 #include "display/oled_display.h"
 #include "application.h"
 #include "button.h"
 #include "led/single_led.h"
+#include "led/circular_strip.h"
 #include "mcp_server.h"
 #include "settings.h"
 #include "config.h"
@@ -19,7 +28,11 @@
 
 #define TAG "XminiC3Board"
 
+#if NETWORK_MODE == 0
 class XminiC3Board : public Ml307Board {
+#else
+class XminiC3Board : public WifiBoard {
+#endif
 private:
     i2c_master_bus_handle_t codec_i2c_bus_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -29,6 +42,7 @@ private:
     SleepTimer* sleep_timer_ = nullptr;
     AdcBatteryMonitor* adc_battery_monitor_ = nullptr;
     PressToTalkMcpTool* press_to_talk_tool_ = nullptr;
+    CircularStrip* led_strip_;
 
     void InitializeBatteryMonitor() {
         adc_battery_monitor_ = new AdcBatteryMonitor(ADC_UNIT_1, ADC_CHANNEL_4, 100000, 100000, GPIO_NUM_12);
@@ -48,14 +62,18 @@ private:
             ESP_LOGI(TAG, "Enabling sleep mode");
             // Show the standby screen
             GetDisplay()->SetPowerSaveMode(true);
+#if NETWORK_MODE == 0
             // Enable sleep mode, and sleep in 1 second after DTR is set to high
             modem_->SetSleepMode(true, 1);
             // Set the DTR pin to high to make the modem enter sleep mode
             modem_->GetAtUart()->SetDtrPin(true);
+#endif
         });
         sleep_timer_->OnExitLightSleepMode([this]() {
+#if NETWORK_MODE == 0
             // Set the DTR pin to low to make the modem wake up
             modem_->GetAtUart()->SetDtrPin(false);
+#endif
             // Hide the standby screen
             GetDisplay()->SetPowerSaveMode(false);
         });
@@ -90,24 +108,24 @@ private:
         // SSD1306 config
         esp_lcd_panel_io_i2c_config_t io_config = {
             .dev_addr = 0x3C,
-            .scl_speed_hz = 400 * 1000,
+            .on_color_trans_done = nullptr,
+            .user_ctx = nullptr,
             .control_phase_bytes = 1,
             .dc_bit_offset = 6,
             .lcd_cmd_bits = 8,
             .lcd_param_bits = 8,
-            .on_color_trans_done = nullptr,
-            .user_ctx = nullptr,
             .flags = {
                 .dc_low_on_data = 0,
                 .disable_control_phase = 0,
             },
+            .scl_speed_hz = 400 * 1000,
         };
 
-        ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(codec_i2c_bus_, &io_config, &panel_io_));
+        ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(codec_i2c_bus_, &io_config, &panel_io_));
 
         ESP_LOGI(TAG, "Install SSD1306 driver");
         esp_lcd_panel_dev_config_t panel_config = {};
-        panel_config.reset_gpio_num = GPIO_NUM_NC;
+        panel_config.reset_gpio_num = -1;
         panel_config.bits_per_pixel = 1;
 
         esp_lcd_panel_ssd1306_config_t ssd1306_config = {
@@ -135,17 +153,20 @@ private:
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
+            ESP_LOGI(TAG, "OnClick");
             auto& app = Application::GetInstance();
             if (!press_to_talk_tool_ || !press_to_talk_tool_->IsPressToTalkEnabled()) {
                 app.ToggleChatState();
             }
         });
         boot_button_.OnPressDown([this]() {
+            ESP_LOGI(TAG, "OnPressDown");
             if (press_to_talk_tool_ && press_to_talk_tool_->IsPressToTalkEnabled()) {
                 Application::GetInstance().StartListening();
             }
         });
         boot_button_.OnPressUp([this]() {
+            ESP_LOGI(TAG, "OnPressUp");
             if (press_to_talk_tool_ && press_to_talk_tool_->IsPressToTalkEnabled()) {
                 Application::GetInstance().StopListening();
             }
@@ -157,21 +178,42 @@ private:
         press_to_talk_tool_->Initialize();
     }
 
-public:
-    XminiC3Board() : Ml307Board(ML307_TX_PIN, ML307_RX_PIN, ML307_DTR_PIN),
-        boot_button_(BOOT_BUTTON_GPIO, false, 0, 0, true) {
+    void InitaializeCircleLed() {
+        led_strip_ = new CircularStrip(BUILTIN_LED_GPIO, 2);
+    }
 
+public:
+#if NETWORK_MODE == 0
+    XminiC3Board() : Ml307Board(ML307_TX_PIN, ML307_RX_PIN, ML307_DTR_PIN), boot_button_(BOOT_BUTTON_GPIO, false, 0, 0, true) {
+#else
+    XminiC3Board() : boot_button_(BOOT_BUTTON_GPIO, false, 0, 0, true) {  
+#endif
         InitializeBatteryMonitor();
         InitializePowerSaveTimer();
         InitializeCodecI2c();
         InitializeSsd1306Display();
         InitializeButtons();
         InitializeTools();
+        InitaializeCircleLed();
     }
 
     virtual Led* GetLed() override {
-        static SingleLed led(BUILTIN_LED_GPIO);
-        return &led;
+        // static SingleLed led(BUILTIN_LED_GPIO);
+        // return &led;
+
+        StripColor low = {
+            .red    = 4,
+            .green  = 4,
+            .blue   = 4,
+        };
+        StripColor high = {
+            .red    = 255,
+            .green  = 80,
+            .blue   = 60,
+        };
+        led_strip_->Breathe(low, high, 10);
+
+        return led_strip_;
     }
 
     virtual Display* GetDisplay() override {
@@ -196,7 +238,11 @@ public:
         if (level != PowerSaveLevel::LOW_POWER) {
             sleep_timer_->WakeUp();
         }
+#if NETWORK_MODE == 0
         Ml307Board::SetPowerSaveLevel(level);
+#else
+        WifiBoard::SetPowerSaveLevel(level);
+#endif
     }
 };
 
